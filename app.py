@@ -172,6 +172,11 @@ class App:
         self.today_base = self.db.seconds_since(self.midnight(), int(time.time()))
         self.render()
 
+    def refresh_today(self):
+        """Re-read today's total after sessions were edited, deleted or imported."""
+        self.today_base = self.db.seconds_since(self.midnight(), int(time.time()))
+        self.render()
+
     def set_project(self, name):
         running = self.session is not None
         if running:

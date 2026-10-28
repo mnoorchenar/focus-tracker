@@ -73,6 +73,26 @@ class DB:
             self.con.execute("UPDATE sessions SET end_ts=?, last_ts=? WHERE id=?", (ts, ts, sid))
         self.con.commit()
 
+    def add_session(self, project, start, end, plan_min):
+        self.add_project(project)
+        cur = self.con.execute(
+            "INSERT INTO sessions (project, start_ts, end_ts, last_ts, plan_min) VALUES (?, ?, ?, ?, ?)",
+            (project, start, end, end, plan_min))
+        self.con.commit()
+        return cur.lastrowid
+
+    def update_session(self, sid, project, start, end, plan_min):
+        self.add_project(project)
+        self.con.execute(
+            "UPDATE sessions SET project=?, start_ts=?, end_ts=?, last_ts=?, plan_min=? WHERE id=?",
+            (project, start, end, end, plan_min, sid))
+        self.con.commit()
+
+    def has_session(self, project, start, end):
+        return self.con.execute(
+            "SELECT 1 FROM sessions WHERE project=? AND start_ts=? AND end_ts=?",
+            (project, start, end)).fetchone() is not None
+
     def delete_session(self, sid):
         self.con.execute("DELETE FROM sessions WHERE id=?", (sid,))
         self.con.commit()
