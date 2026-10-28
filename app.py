@@ -1,5 +1,6 @@
 """Focus Tracker: main window + tiny always-on-top corner icon + global hotkey to start/pause."""
 import ctypes
+import queue
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 import keyboard
+import pystray
 from PIL import Image, ImageDraw, ImageTk
 
 from db import DB, DB_PATH
@@ -44,12 +46,12 @@ def work_area():
     return rect
 
 
-def app_icon(size=64):
+def app_icon(size=64, color=GREEN):
     im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     d.ellipse((1, 1, size - 2, size - 2), fill=DISC)
     pad, w = size * 0.16, max(2, size // 9)
-    d.arc((pad, pad, size - pad, size - pad), -90, 200, fill=GREEN, width=w)
+    d.arc((pad, pad, size - pad, size - pad), -90, 200, fill=color, width=w)
     return im
 
 
@@ -61,7 +63,9 @@ class App:
         self.root = tk.Tk()
         self.icon = ImageTk.PhotoImage(app_icon())
         self.root.iconphoto(True, self.icon)
-        self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)  # hide; icon + hotkey keep running
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_window)  # keeps running in the tray
+        self.ui_queue = queue.Queue()  # tray-thread callbacks, run on the Tk thread
+        self.tray_state = None
 
         self.project = self.db.get("project", "")
         self.plan_min = int(float(self.db.get("plan_min", 20)))
@@ -73,12 +77,16 @@ class App:
         self.today_base = self.db.seconds_since(self.midnight(), int(time.time()))
         self.last_beat = 0
         self.autostart_var = tk.BooleanVar(value=self.autostart_enabled())
+        self.overlay_var = tk.BooleanVar(value=self.db.get("show_overlay", "1") == "1")
 
         self.build_overlay()
         self.main = MainWindow(self)
+        self.restore_window_state()
         if minimized:
             self.root.withdraw()
         self.register_hotkey()
+        self.build_tray()
+        self.pump()
         self.tick()
 
     @staticmethod
@@ -100,23 +108,60 @@ class App:
         self.arc = c.create_arc(*box, start=90, extent=0, style="arc", outline=GRAY, width=5)
         self.label = c.create_text(SIZE / 2, SIZE / 2 - 8, fill="white", font=("Segoe UI Semibold", 20), text="0")
         self.unit = c.create_text(SIZE / 2, SIZE / 2 + 18, fill=GRAY, font=("Segoe UI", 8), text="TODAY")
-        c.bind("<Button-1>", lambda e: self.toggle())
+        c.bind("<ButtonPress-1>", self.drag_start)
+        c.bind("<B1-Motion>", self.drag_move)
+        c.bind("<ButtonRelease-1>", self.drag_end)
         c.bind("<Button-3>", self.show_menu)
         ov.bind("<Enter>", lambda e: ov.attributes("-alpha", 0.95))
         ov.bind("<Leave>", lambda e: ov.attributes("-alpha", 0.6))
         ov.update_idletasks()
         r = work_area()
-        ov.geometry(f"+{r.right - SIZE - 10}+{r.bottom - SIZE - 10}")
+        x, y = r.right - SIZE - 10, r.bottom - SIZE - 10
+        saved = self.db.get("ov_pos")
+        if saved and "," in saved:
+            sx, sy = (int(v) for v in saved.split(","))
+            if 0 <= sx <= self.root.winfo_vrootwidth() - SIZE and 0 <= sy <= self.root.winfo_vrootheight() - SIZE:
+                x, y = sx, sy
+        ov.geometry(f"+{x}+{y}")
         self.menu = tk.Menu(ov, tearoff=0)
+        self.apply_overlay_visibility()
+
+    def drag_start(self, e):
+        self.drag = (e.x_root, e.y_root, self.ov.winfo_x(), self.ov.winfo_y(), False)
+
+    def drag_move(self, e):
+        x0, y0, wx, wy, moved = self.drag
+        if moved or abs(e.x_root - x0) + abs(e.y_root - y0) > 6:
+            self.drag = (x0, y0, wx, wy, True)
+            self.ov.geometry(f"+{wx + e.x_root - x0}+{wy + e.y_root - y0}")
+
+    def drag_end(self, e):
+        if self.drag[4]:  # it was dragged: remember the spot instead of toggling
+            self.db.set("ov_pos", f"{self.ov.winfo_x()},{self.ov.winfo_y()}")
+        else:
+            self.toggle()
+
+    def apply_overlay_visibility(self):
+        self.db.set("show_overlay", "1" if self.overlay_var.get() else "0")
+        if self.overlay_var.get():
+            self.ov.deiconify()
+        else:
+            self.ov.withdraw()
 
     def show_menu(self, event):
         m = self.menu
         m.delete(0, "end")
         m.add_command(label="Open window", command=self.show_window)
         m.add_command(label="Pause" if self.session else "Start", command=self.toggle)
+        m.add_command(label="Reset icon position", command=self.reset_overlay_pos)
         m.add_separator()
         m.add_command(label="Quit", command=self.quit)
         m.tk_popup(event.x_root, event.y_root)
+
+    def reset_overlay_pos(self):
+        r = work_area()
+        self.ov.geometry(f"+{r.right - SIZE - 10}+{r.bottom - SIZE - 10}")
+        self.db.set("ov_pos", "")
 
     def render(self):
         now = time.time()
@@ -128,14 +173,47 @@ class App:
             goal = float(self.db.get("goal_hours", 4)) * 3600
             color, minutes, progress = GRAY, int(self.today_base // 60), self.today_base / goal
             unit = "IDLE" if self.idle_paused else "TODAY"
+        if self.session:
+            self.update_tray(color, f"Focusing on {self.project}: {minutes} min")
+        else:
+            self.update_tray(GRAY, f"Paused - today {int(self.today_base // 60)} min")
         c = self.canvas
         c.itemconfig(self.arc, outline=color, extent=-min(359.9, 360 * progress))
         c.itemconfig(self.label, text=str(minutes), font=("Segoe UI Semibold", 20 if minutes < 1000 else 15))
         c.itemconfig(self.unit, text=unit, fill=color)
 
     # ---- window ----
+    def hide_window(self):
+        self.save_window_state()
+        self.root.withdraw()
+        if not self.db.get("tray_hint_shown"):
+            self.db.set("tray_hint_shown", "1")
+            self.tray.notify("Still running here in the tray. Click the icon to open it again.", "Focus Tracker")
+
+    def save_window_state(self):
+        state = self.root.state()
+        if state == "zoomed":
+            self.db.set("win_zoomed", "1")
+        elif state == "normal":
+            self.db.set("win_zoomed", "0")
+            self.db.set("win_geom", self.root.geometry())
+
+    def restore_window_state(self):
+        geom = self.db.get("win_geom")
+        if geom:
+            try:
+                w, h, x, y = (int(v) for v in geom.replace("x", "+").split("+"))
+                if -w + 100 < x < self.root.winfo_vrootwidth() - 100 and 0 <= y < self.root.winfo_vrootheight() - 100:
+                    self.root.geometry(geom)
+            except ValueError:
+                pass
+        if self.db.get("win_zoomed") == "1":
+            self.root.state("zoomed")
+
     def show_window(self):
         self.root.deiconify()
+        if self.root.state() == "iconic":
+            self.root.state("normal")
         self.root.lift()
         self.root.attributes("-topmost", True)  # Windows may refuse focus to background apps
         self.root.after(200, lambda: self.root.attributes("-topmost", False))
@@ -211,6 +289,31 @@ class App:
         self.render()
         self.root.after(1000, self.tick)
 
+    # ---- tray icon ----
+    def build_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Focus Tracker", lambda: self.post(self.show_window), default=True),
+            pystray.MenuItem(lambda item: "Pause" if self.session else "Start", lambda: self.post(self.toggle)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", lambda: self.post(self.quit)))
+        self.tray = pystray.Icon("FocusTracker", app_icon(64, GRAY), "Focus Tracker", menu)
+        threading.Thread(target=self.tray.run, daemon=True).start()
+
+    def post(self, fn):
+        self.ui_queue.put(fn)
+
+    def pump(self):
+        while not self.ui_queue.empty():
+            self.ui_queue.get()()
+        self.root.after(100, self.pump)
+
+    def update_tray(self, color, text):
+        state = (color, text)
+        if state != self.tray_state:
+            self.tray_state = state
+            self.tray.icon = app_icon(64, color)
+            self.tray.title = text
+
     # ---- hotkey ----
     def register_hotkey(self):
         if self.hotkey_handle is not None:
@@ -274,6 +377,8 @@ class App:
 
     def quit(self):
         self.pause()
+        self.save_window_state()
+        self.tray.stop()
         keyboard.unhook_all()
         self.root.destroy()
 

@@ -1,4 +1,5 @@
 keyboard>=0.13.5
+pystray>=0.19
 matplotlib>=3.8
 pillow>=10
 pyinstaller>=6

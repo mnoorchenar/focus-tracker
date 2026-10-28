@@ -6,13 +6,6 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.dates as mdates
-import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-
 from db import MIN_SESSION_S
 
 RED, ORANGE, GREEN, GRAY = "#ff453a", "#ff9f0a", "#34c759", "#8e8e93"
@@ -378,9 +371,17 @@ class MainWindow:
         f = ttk.Frame(self.tabs, padding=(4, 8, 4, 4))
         self.tabs.add(f, text="  Charts  ")
         self.charts_tab = f
-        self.fig = Figure(figsize=(10, 7), dpi=100, facecolor=BG)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=f)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas = None  # matplotlib is loaded the first time Charts is opened
+
+    def _ensure_charts(self):
+        if self.canvas is None:
+            import matplotlib
+            matplotlib.use("TkAgg")
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            self.fig = Figure(figsize=(10, 7), dpi=100, facecolor=BG)
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self.charts_tab)
+            self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def _build_settings(self):
         f = ttk.Frame(self.tabs, padding=20)
@@ -394,9 +395,12 @@ class MainWindow:
         sp, _ = self._spin(grid, "idle_minutes", 5, 0, 240)
         sp.grid(row=1, column=1, padx=14)
         ttk.Checkbutton(f, text="Start with Windows", variable=self.app.autostart_var,
-                        command=self.app.toggle_autostart).pack(anchor="w", pady=10)
+                        command=self.app.toggle_autostart).pack(anchor="w", pady=(10, 2))
+        ttk.Checkbutton(f, text="Show the corner icon (drag it anywhere; right-click > Reset icon position)",
+                        variable=self.app.overlay_var,
+                        command=self.app.apply_overlay_visibility).pack(anchor="w", pady=(2, 10))
         ttk.Label(f, text=f"Data file: {self.app.db_path}", style="Muted.TLabel").pack(anchor="w", pady=4)
-        ttk.Label(f, text="Closing this window keeps the corner icon and hotkey running.",
+        ttk.Label(f, text="Closing this window keeps Focus Tracker running in the system tray (next to the clock).",
                   style="Muted.TLabel").pack(anchor="w")
         ttk.Button(f, text="Quit Focus Tracker", style="Danger.TButton", command=self.app.quit).pack(anchor="w", pady=18)
 
@@ -656,6 +660,9 @@ class MainWindow:
         fill(self.proj_tree, rows)
 
     def _draw_charts(self, info, segs, first, today):
+        import matplotlib.dates as mdates
+        import numpy as np
+        self._ensure_charts()
         per_project = defaultdict(float)
         per_week = defaultdict(float)
         heat = np.zeros((7, 24))

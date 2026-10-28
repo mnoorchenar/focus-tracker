@@ -9,7 +9,7 @@ Windows app that times your focus sessions per project, against a plan, and show
 - **Hotkey** toggles start/pause. Set any key or combination in the main window (the Copilot key works; it is suppressed so Windows will not open Copilot).
 - **Main window** (launch the exe again, or right-click the icon > Open window): Home (live timer, project, plan, hotkey, stat cards, and the session list where you can add, edit - project, start, end, plan - or delete sessions), Daily, Projects (add / rename / delete), Charts, Settings (daily goal, idle auto-pause, start with Windows).
 - **Import / export CSV** from the top bar. Import skips sessions that already exist, so you can safely re-import a backup.
-- Closing the window keeps the icon and hotkey running; quit from Settings or the icon's right-click menu.
+- Closing the window hides it to the system tray (next to the clock); click the tray icon to reopen, right-click for Start/Pause/Quit. The corner icon can be dragged anywhere (position is remembered) or hidden in Settings. Window size, position and maximized state are remembered.
 - Data: SQLite at `%APPDATA%\FocusTracker\focus.db` (project, start, end, plan per session). Crash-safe via a 30 s heartbeat. CSV export included.
 
 ## Run / build
