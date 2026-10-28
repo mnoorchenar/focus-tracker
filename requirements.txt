@@ -1,0 +1,4 @@
+keyboard>=0.13.5
+matplotlib>=3.8
+pillow>=10
+pyinstaller>=6
